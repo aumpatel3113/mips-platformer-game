@@ -17,23 +17,24 @@
 # - Milestone 3 (choose the one the applies) 
 # 
 # Which approved features have been implemented for milestone 3? 
-# (See the assignment handout for the list of additional features) 
-# 1. (fill in the feature, if any) 
-# 2. (fill in the feature, if any) 
-# 3. (fill in the feature, if any) 
-# ... (add more if necessary) 
-# 
-# Link to video demonstration for final submission: 
-# - (insert YouTube / MyMedia / other URL here). Make sure we can view it! 
-# 
-# Are you OK with us sharing the video with people outside course staff? 
-# - yes / no / yes, and please share this project github link as well! 
+# (See the assignment handout or the list of additional features) 
+# 1. Health/Score (Collecting mushrooms increase score, purple stars on top of screen) 
+# 2. Fail Condition (Game over screen, when hit by enemy)
+# 3. Win Condition (You Won! screen, when MAX_SCORE reached)
+# 4. Moving Platforms 
+# 5. Moving Objects (Moving enemy) 
+# 6. Spawnng Objects (Randomly spawning mushrooms to collect)
 # 
 # Any additional information that the TA needs to know: 
 # - w to jump
 # - a to move left 
 # - d to move right
 # - p to reset game
+# - Mushroom is one of my objects and it is set to randomly spawn. This roughly takes 
+# - around 10 seconds but sometimes can take longer or be quicker since it is random.
+# - Also, it is set so the mushroom will spawn at a random location on the floor, and
+# - only one mushroom will be spawned at a time. Meaning if you want to spawn a new 
+# - mushroom you need to "pick up" the current one if there is one drawn on the screen. 
 # 
 ##################################################################### 
 
@@ -90,9 +91,17 @@
 .eqv 	MUSHROOM_MAX_X	61
 
 .eqv	PLATFORM_LEN	10
-.eqv	PLATFORM_NUM	5
+.eqv	PLATFORM_NUM	4
+.eqv	PLATFORM_MAX_X	52
+.eqv	MOVING_PLAT_X	11
+.eqv	MOVING_PLAT_Y	11
+.eqv	MOVING_PLAT_S	1
 
 .eqv	GRAVITY_ACC	1
+
+.eqv 	SCORE_MAX	5
+.eqv 	SCORE_X		1
+.eqv	SCORE_Y		1
 
 .data
 MainPlayer:	.word	BLACK, WHITE, WHITE, WHITE, 
@@ -116,8 +125,13 @@ PlayerY:	.word	PLAYER_FLOOR_Y
 PlayerDX:	.word	0
 PlayerDY:	.word	0
 
-PlatformX:	.word	10, 30, 40, 50, 11
-PlatformY:	.word	50, 45, 40, 45, 11
+Score:		.word 	0
+
+PlatformX:	.word	10, 30, 40, 50
+PlatformY:	.word	50, 45, 40, 45
+MovingPlatX:	.word	MOVING_PLAT_X
+MovingPlatY:	.word 	MOVING_PLAT_Y
+MovingPlatDX:	.word	MOVING_PLAT_S
 
 EnemyX:		.word	ENEMY_MAX_X
 EnemyY:		.word 	ENEMY_FLOOR_Y
@@ -165,6 +179,21 @@ init:	# State initialization
 	la $t0, SpawnMushroom
 	sw $zero, 0($t0)
 	
+	# Moving Platform State
+	la $t0, MovingPlatX
+	li $t1, MOVING_PLAT_X
+	sw $t1, 0($t0)
+	la $t0, MovingPlatY
+	li $t1, MOVING_PLAT_Y
+	sw $t1, 0($t0)
+	la $t0, MovingPlatDX
+	li $t1, MOVING_PLAT_S
+	sw $t1, 0($t0)
+	
+	# Score State
+	la $t0, Score
+	sw $zero, 0($t0)
+	
 	# Start Screen
 		li $t0, BASE_ADDRESS
 		addi $t1, $t0, 15872
@@ -207,6 +236,13 @@ skipInput:	# Erase objects from the old position on the screen
 		add $a0, $s2, $zero
 		add $a1, $s3, $zero
 		jal EraseEnemy
+		# Erase Moving Platform
+		la $t8, MovingPlatX
+		la $t9, MovingPlatY
+		lw $s7, 0($t8)
+		add $a0, $s7, $zero
+		lw $a1, 0($t9)
+		jal EraseMovingPlatform
 		
 		# Update player location,
 		add $a0, $s0, $zero
@@ -226,6 +262,14 @@ skipInput:	# Erase objects from the old position on the screen
 		add $s2, $s2, $v0
 		la $t8, EnemyX
 		sw $s2, 0($t8)
+		# Update moving platform location,
+		add $a0, $s7, $zero
+		jal GetValidMovingPlatDir
+		la $t8, MovingPlatDX
+		sw $v0, 0($t8)
+		add $s7, $s7, $v0
+		la $t8, MovingPlatX
+		sw $s7, 0($t8)
 		
 		# Redraw objects in the new position on the screen
 		# Draw main player
@@ -240,6 +284,12 @@ skipInput:	# Erase objects from the old position on the screen
 		lw $a0, 0($t8)
 		lw $a1, 0($t9)
 		jal DrawEnemy
+		# Draw moving platform
+		la $t8, MovingPlatX
+		la $t9, MovingPlatY
+		lw $a0, 0($t8)
+		lw $a1, 0($t9)
+		jal DrawMovingPlatform
 		
 		# Check for various collisions
 		add $a0, $s0, $zero
@@ -258,6 +308,11 @@ skipInput:	# Erase objects from the old position on the screen
 		jal TouchMushroom
 		
 		# Update other game state and end of game
+		jal DrawScore
+		la $t8, Score
+		lw $t8, 0($t8)
+		bge $t8, SCORE_MAX, mainLoopEnd
+		
 		# Check if we should use RNG to spawn mushroom if there is no mushroom spawned 
 		la $t8, SpawnMushroom
 		lw $s6, 0($t8)
@@ -296,7 +351,27 @@ noMushroom:	li $v0, 32
 		syscall 
 
 		j mainLoop
-mainLoopEnd:	li $v0, 10 # terminate the program gracefully 
+mainLoopEnd:	# End the game, so set up screen for either game over or win screen
+		li $t0, BASE_ADDRESS
+		addi $t1, $t0, 16388
+endSetupLoop:	beq $t0, $t1, endSetupLoopEnd
+		sw $zero, 0($t0)
+		addi $t0, $t0, 4
+		j endSetupLoop
+endSetupLoopEnd:
+		# Draw the score to display on game over or win screen
+		jal DrawScore
+		# Check if we should draw win screen
+		la $t8, Score
+		lw $t8, 0($t8)
+		bge $t8, SCORE_MAX, winScreen
+		# Here means game over screen
+		jal DrawGameOver
+		j end
+winScreen:	# Here means you win screen
+		jal DrawYouWin
+		
+end:		li $v0, 10 # terminate the program gracefully 
  		syscall
 
 # void TouchMushroom(px, py, mx, my)
@@ -310,7 +385,7 @@ TouchMushroom:
 		addi $t0, $t0, -1
 		addi $t1, $a1, PLAYER_H
 		addi $t1, $t1, -1
-		# Get enemy right and bottom values
+		# Get mushroom right and bottom values
 		addi $t2, $a2, MUSHROOM_W
 		addi $t2, $t2, -1
 		addi $t3, $a3, MUSHROOM_H
@@ -327,6 +402,11 @@ TouchMushroom:
 		addi $sp, $sp, -8
 		sw $a0, 4($sp)
 		sw $a1, 0($sp)
+		# Increase the score
+		la $t5, Score
+		lw $t6, 0($t5)
+		addi $t6, $t6, 1
+		sw $t6, 0($t5)
 		# Erase consumed mushroom
 		move $a0, $a2
 		move $a1, $a3
@@ -378,8 +458,30 @@ TouchEnemy:
 		li $v0, 32
 		li $a0, ENEMY_STUN
 		syscall 
+		# Jump to game over screen if player made contact with the enemy
+		j mainLoopEnd
 noPEOverlap:	jr $ra
 		
+
+# Checks if the change in position of the moving platform is valid
+# (Can't go off left or right bounds)
+# Returns the change in valid position
+# (int [dx]) GetValidMovingPlatDir(x)
+GetValidMovingPlatDir:
+		# If moving platform X == MOVING_PLAT_X and dx < 0 
+		# or moving platform X ==  PLATFORM_MAX_X and dx > 0
+ 		# Then return dx = (-1 * original dx) else return dx = original dx 
+		la $t9, MovingPlatDX
+		lw $v0, 0($t9)
+		bne $a0, MOVING_PLAT_X, dxCheckGVMPD
+		bgez $v0, dxCheckGVMPD
+		mul $v0, $v0, -1
+		jr $ra
+dxCheckGVMPD:	bne $a0, PLATFORM_MAX_X, retGVMPD
+		blez $v0, retGVMPD
+		mul $v0, $v0, -1
+retGVMPD:	jr $ra
+
 
 # Checks if the change in position of the enemy is valid
 # (Can't go off left or right edges)
@@ -447,9 +549,12 @@ HandleGravity:	# Get Player X and Y coordinates
  		add $t3, $t3, $t2 # $t3 is the pixel stood on 
  		# Then player is standing on platform and DY should be 0
  		# Else gravity should be on and DY > 0 
- 		lw $t3, 0($t3)
+ 		lw $t6, 0($t3)
  		la $t4, PlayerDY
- 		beq $t3, BROWN, isOnPlatform
+ 		beq $t6, BROWN, isOnPlatform # Left foot on platform check
+ 		addi $t3, $t3, 8
+ 		lw $t6, 0($t3)
+ 		beq $t6, BROWN, isOnPlatform # Right foot on platform check
  		li $t5, GRAVITY_ACC
  		sw $t5, 0($t4)
  		jr $ra
@@ -780,3 +885,461 @@ FillMainPlayer:
 	sw $t1, 8($t0)
 	sw $a2, 12($t0)
 	jr $ra
+
+# void DrawMovingPlatform(x, y)
+DrawMovingPlatform:
+	li $t9, BASE_ADDRESS
+	li $t7, BROWN
+	mul $a1, $a1, FRAME_BUFFER_W
+	add $a1, $a1, $a0
+	sll $a1, $a1, 2
+	add $t9, $t9, $a1
+	# Paint platform
+	sw $t7, 0($t9)
+	sw $t7, 4($t9)
+	sw $t7, 8($t9)
+	sw $t7, 12($t9)
+	sw $t7, 16($t9)
+	sw $t7, 20($t9)
+	sw $t7, 24($t9)
+	sw $t7, 28($t9)
+	sw $t7, 32($t9)
+	sw $t7, 36($t9)	
+	jr $ra
+	
+# void EraseMovingPlatform(x, y)
+EraseMovingPlatform:
+	li $t9, BASE_ADDRESS
+	li $t7, BLACK
+	mul $a1, $a1, FRAME_BUFFER_W
+	add $a1, $a1, $a0
+	sll $a1, $a1, 2
+	add $t9, $t9, $a1
+	# Paint platform
+	sw $t7, 0($t9)
+	sw $t7, 4($t9)
+	sw $t7, 8($t9)
+	sw $t7, 12($t9)
+	sw $t7, 16($t9)
+	sw $t7, 20($t9)
+	sw $t7, 24($t9)
+	sw $t7, 28($t9)
+	sw $t7, 32($t9)
+	sw $t7, 36($t9)	
+	jr $ra
+
+# void DrawScore()
+DrawScore:
+		li $t0, BASE_ADDRESS
+		li $t1, SCORE_X
+		li $t2, SCORE_Y
+		li $t3, PURPLE
+		move $t4, $zero
+		la $t5, Score
+		lw $t5, 0($t5) 
+scoreLoop:	beq $t4, $t5, scoreLoopEnd
+		mul $t2, $t2, FRAME_BUFFER_W
+		add $t2, $t2, $t1
+		sll $t2, $t2, 2
+		add $t2, $t0, $t2
+		# Paint star representing score
+		# Row 1
+		sw $zero, 0($t2)
+		sw $t3, 4($t2)
+		sw $zero, 8($t2)
+		sw $zero, 12($t2)
+		# Row 2
+		addi $t2, $t2, FRAME_BUF_PIX_W
+		sw $t3, 0($t2)
+		sw $t3, 4($t2)
+		sw $t3, 8($t2)
+		sw $zero, 12($t2)
+		# Row 3
+		addi $t2, $t2, FRAME_BUF_PIX_W
+		sw $zero, 0($t2)
+		sw $t3, 4($t2)
+		sw $zero, 8($t2)
+		sw $zero, 12($t2)
+		# Update loop variables
+		addi $t1, $t1, 5
+		li $t2, SCORE_Y
+		addi $t4, $t4, 1
+		j scoreLoop
+scoreLoopEnd:	jr $ra
+
+# void DrawGameOver()
+DrawGameOver:
+	li $t0, 16
+	mul $t0, $t0, FRAME_BUFFER_W
+	addi $t0, $t0, 4
+	sll $t0, $t0, 2
+	addi $t0, $t0, BASE_ADDRESS
+	# Paint 
+	li $t1, DRK_GRN
+	# Row 1
+	sw $t1, 0($t0)
+	sw $t1, 4($t0)
+	sw $t1, 8($t0)
+	sw $t1, 12($t0)
+	sw $t1, 16($t0)
+	sw $t1, 20($t0)
+	sw $t1, 128($t0)
+	sw $t1, 132($t0)
+	sw $t1, 136($t0)
+	sw $t1, 140($t0)
+	sw $t1, 144($t0)
+	sw $t1, 148($t0)
+	# Row 2
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 0($t0)
+	sw $t1, 32($t0)
+	sw $t1, 36($t0)
+	sw $t1, 40($t0)
+	sw $t1, 44($t0)
+	sw $t1, 48($t0)
+	sw $t1, 56($t0)
+	sw $t1, 60($t0)
+	sw $t1, 64($t0)
+	sw $t1, 68($t0)
+	sw $t1, 72($t0)
+	sw $t1, 76($t0)
+	sw $t1, 80($t0)
+	sw $t1, 88($t0)
+	sw $t1, 92($t0)
+	sw $t1, 96($t0)
+	sw $t1, 100($t0)
+	sw $t1, 104($t0)
+	sw $t1, 128($t0)
+	sw $t1, 148($t0)
+	sw $t1, 160($t0)
+	sw $t1, 176($t0)
+	sw $t1, 184($t0)
+	sw $t1, 188($t0)
+	sw $t1, 192($t0)
+	sw $t1, 196($t0)
+	sw $t1, 200($t0)
+	sw $t1, 208($t0)
+	sw $t1, 212($t0)
+	sw $t1, 216($t0)
+	sw $t1, 220($t0)
+	sw $t1, 224($t0)
+	# Row 3
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 0($t0)
+	sw $t1, 32($t0)
+	sw $t1, 48($t0)
+	sw $t1, 56($t0)
+	sw $t1, 68($t0)
+	sw $t1, 80($t0)
+	sw $t1, 88($t0)
+	sw $t1, 128($t0)
+	sw $t1, 148($t0)
+	sw $t1, 160($t0)
+	sw $t1, 176($t0)
+	sw $t1, 184($t0)
+	sw $t1, 208($t0)
+	sw $t1, 224($t0)
+	# Row 4
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 0($t0)
+	sw $t1, 32($t0)
+	sw $t1, 48($t0)
+	sw $t1, 56($t0)
+	sw $t1, 68($t0)
+	sw $t1, 80($t0)
+	sw $t1, 88($t0)
+	sw $t1, 128($t0)
+	sw $t1, 148($t0)
+	sw $t1, 160($t0)
+	sw $t1, 176($t0)
+	sw $t1, 184($t0)
+	sw $t1, 208($t0)
+	sw $t1, 224($t0)
+	# Row 5
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 0($t0)
+	sw $t1, 12($t0)
+	sw $t1, 16($t0)
+	sw $t1, 20($t0)
+	sw $t1, 24($t0)
+	sw $t1, 32($t0)
+	sw $t1, 36($t0)
+	sw $t1, 40($t0)
+	sw $t1, 44($t0)
+	sw $t1, 48($t0)
+	sw $t1, 56($t0)
+	sw $t1, 68($t0)
+	sw $t1, 80($t0)
+	sw $t1, 88($t0)
+	sw $t1, 92($t0)
+	sw $t1, 96($t0)
+	sw $t1, 100($t0)
+	sw $t1, 104($t0)
+	sw $t1, 128($t0)
+	sw $t1, 148($t0)
+	sw $t1, 160($t0)
+	sw $t1, 176($t0)
+	sw $t1, 184($t0)
+	sw $t1, 188($t0)
+	sw $t1, 192($t0)
+	sw $t1, 196($t0)
+	sw $t1, 200($t0)
+	sw $t1, 208($t0)
+	sw $t1, 212($t0)
+	sw $t1, 216($t0)
+	sw $t1, 220($t0)
+	sw $t1, 224($t0)
+	# Row 6
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 0($t0)
+	sw $t1, 20($t0)
+	sw $t1, 32($t0)
+	sw $t1, 48($t0)
+	sw $t1, 56($t0)
+	sw $t1, 68($t0)
+	sw $t1, 80($t0)
+	sw $t1, 88($t0)
+	sw $t1, 128($t0)
+	sw $t1, 148($t0)
+	sw $t1, 160($t0)
+	sw $t1, 176($t0)
+	sw $t1, 184($t0)
+	sw $t1, 208($t0)
+	sw $t1, 216($t0)
+	# Row 7
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 0($t0)
+	sw $t1, 20($t0)
+	sw $t1, 32($t0)
+	sw $t1, 48($t0)
+	sw $t1, 56($t0)
+	sw $t1, 68($t0)
+	sw $t1, 80($t0)
+	sw $t1, 88($t0)
+	sw $t1, 128($t0)
+	sw $t1, 148($t0)
+	sw $t1, 164($t0)
+	sw $t1, 172($t0)
+	sw $t1, 184($t0)
+	sw $t1, 208($t0)
+	sw $t1, 216($t0)
+	sw $t1, 220($t0)
+	# Row 8
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 0($t0)
+	sw $t1, 4($t0)
+	sw $t1, 8($t0)
+	sw $t1, 12($t0)
+	sw $t1, 16($t0)
+	sw $t1, 20($t0)
+	sw $t1, 32($t0)
+	sw $t1, 48($t0)
+	sw $t1, 56($t0)
+	sw $t1, 68($t0)
+	sw $t1, 80($t0)
+	sw $t1, 88($t0)
+	sw $t1, 92($t0)
+	sw $t1, 96($t0)
+	sw $t1, 100($t0)
+	sw $t1, 104($t0)
+	sw $t1, 128($t0)
+	sw $t1, 132($t0)
+	sw $t1, 136($t0)
+	sw $t1, 140($t0)
+	sw $t1, 144($t0)
+	sw $t1, 148($t0)
+	sw $t1, 168($t0)
+	sw $t1, 184($t0)
+	sw $t1, 188($t0)
+	sw $t1, 192($t0)
+	sw $t1, 196($t0)
+	sw $t1, 200($t0)
+	sw $t1, 208($t0)
+	sw $t1, 220($t0)
+	sw $t1, 224($t0)
+	# Save $ra on stack
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	# Draw decorative ememies
+	li $a0, 16
+	li $a1, 59 
+	jal DrawEnemy
+	li $a0, 32
+	li $a1, 59 
+	jal DrawEnemy
+	li $a0, 52
+	li $a1, 59 
+	jal DrawEnemy
+	# Restore $ra from stack
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+
+# void DrawYouWin()
+DrawYouWin:
+	li $t0, 16
+	mul $t0, $t0, FRAME_BUFFER_W
+	addi $t0, $t0, 14
+	sll $t0, $t0, 2
+	addi $t0, $t0, BASE_ADDRESS
+	# Paint 
+	li $t1, BLUE
+	# Row 1
+	sw $t1, 0($t0)
+	sw $t1, 16($t0)
+	sw $t1, 84($t0)
+	sw $t1, 96($t0)
+	sw $t1, 108($t0)
+	# Row 2
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 0($t0)
+	sw $t1, 16($t0)
+	sw $t1, 24($t0)
+	sw $t1, 28($t0)
+	sw $t1, 32($t0)
+	sw $t1, 36($t0)
+	sw $t1, 40($t0)
+	sw $t1, 48($t0)
+	sw $t1, 64($t0)
+	sw $t1, 84($t0)
+	sw $t1, 96($t0)
+	sw $t1, 108($t0)
+	sw $t1, 116($t0)
+	sw $t1, 120($t0)
+	sw $t1, 124($t0)
+	sw $t1, 128($t0)
+	sw $t1, 132($t0)
+	sw $t1, 140($t0)
+	sw $t1, 144($t0)
+	sw $t1, 148($t0)
+	sw $t1, 156($t0)
+	# Row 3
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 0($t0)
+	sw $t1, 16($t0)
+	sw $t1, 24($t0)
+	sw $t1, 40($t0)
+	sw $t1, 48($t0)
+	sw $t1, 64($t0)
+	sw $t1, 84($t0)
+	sw $t1, 96($t0)
+	sw $t1, 108($t0)
+	sw $t1, 124($t0)
+	sw $t1, 140($t0)
+	sw $t1, 148($t0)
+	sw $t1, 156($t0)
+	# Row 4
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 0($t0)
+	sw $t1, 4($t0)
+	sw $t1, 8($t0)
+	sw $t1, 12($t0)
+	sw $t1, 16($t0)
+	sw $t1, 24($t0)
+	sw $t1, 40($t0)
+	sw $t1, 48($t0)
+	sw $t1, 64($t0)
+	sw $t1, 84($t0)
+	sw $t1, 96($t0)
+	sw $t1, 108($t0)
+	sw $t1, 124($t0)
+	sw $t1, 140($t0)
+	sw $t1, 148($t0)
+	sw $t1, 156($t0)
+	# Row 5
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 8($t0)
+	sw $t1, 24($t0)
+	sw $t1, 40($t0)
+	sw $t1, 48($t0)
+	sw $t1, 64($t0)
+	sw $t1, 84($t0)
+	sw $t1, 96($t0)
+	sw $t1, 108($t0)
+	sw $t1, 124($t0)
+	sw $t1, 140($t0)
+	sw $t1, 148($t0)
+	sw $t1, 156($t0)
+	# Row 6
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 8($t0)
+	sw $t1, 24($t0)
+	sw $t1, 40($t0)
+	sw $t1, 48($t0)
+	sw $t1, 64($t0)
+	sw $t1, 84($t0)
+	sw $t1, 96($t0)
+	sw $t1, 108($t0)
+	sw $t1, 124($t0)
+	sw $t1, 140($t0)
+	sw $t1, 148($t0)
+	sw $t1, 156($t0)
+	# Row 7
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 8($t0)
+	sw $t1, 24($t0)
+	sw $t1, 40($t0)
+	sw $t1, 48($t0)
+	sw $t1, 64($t0)
+	sw $t1, 84($t0)
+	sw $t1, 96($t0)
+	sw $t1, 108($t0)
+	sw $t1, 124($t0)
+	sw $t1, 140($t0)
+	sw $t1, 148($t0)
+	sw $t1, 156($t0)
+	# Row 8
+	addi $t0, $t0, FRAME_BUF_PIX_W
+	sw $t1, 8($t0)
+	sw $t1, 24($t0)
+	sw $t1, 28($t0)
+	sw $t1, 32($t0)
+	sw $t1, 36($t0)
+	sw $t1, 40($t0)
+	sw $t1, 48($t0)
+	sw $t1, 52($t0)
+	sw $t1, 56($t0)
+	sw $t1, 60($t0)
+	sw $t1, 64($t0)
+	sw $t1, 84($t0)
+	sw $t1, 88($t0)
+	sw $t1, 92($t0)
+	sw $t1, 96($t0)
+	sw $t1, 100($t0)
+	sw $t1, 104($t0)
+	sw $t1, 108($t0)
+	sw $t1, 116($t0)
+	sw $t1, 120($t0)
+	sw $t1, 124($t0)
+	sw $t1, 128($t0)
+	sw $t1, 132($t0)
+	sw $t1, 140($t0)
+	sw $t1, 148($t0)
+	sw $t1, 152($t0)
+	sw $t1, 156($t0)
+	# Save $ra on stack
+	addi $sp, $sp, -4
+	sw $ra, 0($sp)
+	# Draw decorative ememies
+	li $a0, 11
+	li $a1, 61 
+	jal DrawMushroom
+	li $a0, 25
+	li $a1, 61 
+	jal DrawMushroom
+	li $a0, 32
+	li $a1, 59 
+	jal DrawMainPlayer
+	li $a0, 41
+	li $a1, 61 
+	jal DrawMushroom
+	li $a0, 52
+	li $a1, 61 
+	jal DrawMushroom
+	# Restore $ra from stack
+	lw $ra, 0($sp)
+	addi $sp, $sp, 4
+	jr $ra
+	
+	
+	
